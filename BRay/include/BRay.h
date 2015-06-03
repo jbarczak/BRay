@@ -82,7 +82,7 @@ namespace BRay
     void AddRay( TracerHandle hTracer, const RayData* pRay );
     void ReadRayOrigin( TracerHandle hTracer,float* pOrigin,  size_t nRay );
     void ReadRayDirection( TracerHandle hTracer,  float* pDir, size_t nRay );
-
+    void ReadRayData( TracerHandle hTracer, size_t nRay, RayData* pRayOut );
     size_t GetRayCount( TracerHandle hTracer );
 
     void Trace( TracerHandle hTracer, BRay::RayHitInfo* pHitsOut );

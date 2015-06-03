@@ -166,7 +166,20 @@ namespace BRay
         hTracer->pOctantCounts[octant]++;
         hTracer->nRays = nRay+1;
     }
-   
+
+    void ReadRayData( TracerHandle hTracer, size_t nRayIndex, RayData* pRayOut )
+    {
+        _INTERNAL::Ray* pR = &hTracer->pRays[nRayIndex];
+        pRayOut->O[0] = pR->ox;
+        pRayOut->O[1] = pR->oy;
+        pRayOut->O[2] = pR->oz;
+        pRayOut->D[0] = pR->dx;
+        pRayOut->D[1] = pR->dy;
+        pRayOut->D[2] = pR->dz;
+        pRayOut->TMax = pR->tmax;
+           
+    }
+
     void ReadRayOrigin( TracerHandle hTracer, float* pOrigin, size_t nRayIndex )
     {
         pOrigin[0] = hTracer->pRays[nRayIndex].ox;

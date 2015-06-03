@@ -1,0 +1,3 @@
+[submodule "test/Simpleton"]
+	path = test/Simpleton
+	url = http://github.com/jbarczak/Simpleton
