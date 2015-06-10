@@ -135,7 +135,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>../../Simpleton/include; ../../../BRay/include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../../Simpleton/include; ../../../BRay/include; ../../embree/include; ../../embree</AdditionalIncludeDirectories>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <FavorSizeOrSpeed>Size</FavorSizeOrSpeed>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
@@ -155,9 +155,16 @@
     <ProjectReference Include="..\..\..\test\Simpleton\build\msvc2013\Simpleton.vcxproj">
       <Project>{7d98ef05-aaeb-4a55-8425-28cbbcbe6754}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\..\embree\embree.vcxproj">
+      <Project>{ed858c9a-c161-4036-8df7-eb169bcb81bc}</Project>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\EmbreeHooks.cpp" />
     <ClCompile Include="..\..\main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\EmbreeHooks.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -6,8 +6,15 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "BRay", "BRay\build\msvc2013\BRay.vcxproj", "{53CDE746-0CFF-44F0-8090-54D6FA02BE37}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "BRayTest", "test\build\msvc2013\BRayTest.vcxproj", "{E82690BC-955C-4E80-A7C7-C760911AA7F0}"
+	ProjectSection(ProjectDependencies) = postProject
+		{ED858C9A-C161-4036-8DF7-EB169BCB81BC} = {ED858C9A-C161-4036-8DF7-EB169BCB81BC}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Simpleton", "test\Simpleton\build\msvc2013\Simpleton.vcxproj", "{7D98EF05-AAEB-4A55-8425-28CBBCBE6754}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "embree", "test\embree\embree.vcxproj", "{ED858C9A-C161-4036-8DF7-EB169BCB81BC}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "sys", "test\embree\sys\sys.vcxproj", "{B118AB3D-AB5B-4D86-90C2-8E91E8457710}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -27,6 +34,14 @@ Global
 		{7D98EF05-AAEB-4A55-8425-28CBBCBE6754}.Debug|x64.Build.0 = Debug|x64
 		{7D98EF05-AAEB-4A55-8425-28CBBCBE6754}.Release|x64.ActiveCfg = Release|x64
 		{7D98EF05-AAEB-4A55-8425-28CBBCBE6754}.Release|x64.Build.0 = Release|x64
+		{ED858C9A-C161-4036-8DF7-EB169BCB81BC}.Debug|x64.ActiveCfg = Debug|x64
+		{ED858C9A-C161-4036-8DF7-EB169BCB81BC}.Debug|x64.Build.0 = Debug|x64
+		{ED858C9A-C161-4036-8DF7-EB169BCB81BC}.Release|x64.ActiveCfg = Release|x64
+		{ED858C9A-C161-4036-8DF7-EB169BCB81BC}.Release|x64.Build.0 = Release|x64
+		{B118AB3D-AB5B-4D86-90C2-8E91E8457710}.Debug|x64.ActiveCfg = Debug|x64
+		{B118AB3D-AB5B-4D86-90C2-8E91E8457710}.Debug|x64.Build.0 = Debug|x64
+		{B118AB3D-AB5B-4D86-90C2-8E91E8457710}.Release|x64.ActiveCfg = Release|x64
+		{B118AB3D-AB5B-4D86-90C2-8E91E8457710}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

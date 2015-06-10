@@ -78,7 +78,7 @@ namespace BRay
         
         pAccel = new(pAccel) _INTERNAL::Accelerator();
         pAccel->nRefCount = 1;
-        _INTERNAL::BuildBVH(pAccel,pMesh,2.4f);
+        _INTERNAL::BuildBVH(pAccel,pMesh,1.4f);
 
         _INTERNAL::RetainObject(pAccel);
         return pAccel;

@@ -17,10 +17,12 @@
 #include "Tracer.h"
 #include "Accelerator.h"
 
+#include <stdio.h>
 #include <intrin.h>
 
 
 //#define NO_REORDERING
+//#define GATHERS
 
 namespace BRay{
 namespace _INTERNAL{
@@ -71,7 +73,7 @@ namespace _INTERNAL{
         __m256 rcp    = _mm256_rcp_ps(f);
         __m256 rcp_sq = _mm256_mul_ps(rcp,rcp);
         __m256 rcp_x2 = _mm256_add_ps(rcp,rcp);
-        return _mm256_sub_ps( rcp_x2, _mm256_mul_ps(rcp_sq,f));
+        return _mm256_fnmadd_ps( rcp_sq, f, rcp_x2 );
     }
 
     static __m256i __forceinline BROADCASTINT( size_t x )
@@ -79,6 +81,9 @@ namespace _INTERNAL{
         return _mm256_broadcastd_epi32(_mm_cvtsi32_si128((int)x));
     }
     
+
+    #define SHUFFLE(a,b,c,d) (a|(b<<2)|(c<<4)|(d<<6))
+
     static void ReadDirs( __m256 D[3], RayPacket* pPacket, Ray* pRays )
     {
 #ifdef GATHERS
@@ -119,12 +124,12 @@ namespace _INTERNAL{
     {
 #ifdef GATHERS
         __m256i idx = _mm256_load_si256((__m256i*)pPacket->RayOffsets);
-        __m256 Dx = _mm256_i32gather_ps( &pRays->ox, idx, 1 );
-        __m256 Dy = _mm256_i32gather_ps( &pRays->oy, idx, 1 );
-        __m256 Dz = _mm256_i32gather_ps( &pRays->oz, idx, 1 );
-        D[0] = Dx;
-        D[1] = Dy;
-        D[2] = Dz;
+        __m256 Ox = _mm256_i32gather_ps( &pRays->ox, idx, 1 );
+        __m256 Oy = _mm256_i32gather_ps( &pRays->oy, idx, 1 );
+        __m256 Oz = _mm256_i32gather_ps( &pRays->oz, idx, 1 );
+        O[0] = Ox;
+        O[1] = Oy;
+        O[2] = Oz;
 #else
         char* pBytes = ((char*)pRays);
         #define LOADPS(x) _mm_load_ps( (float*)(x) )
@@ -277,6 +282,10 @@ namespace _INTERNAL{
 
 #else
 
+            // Load lower halves into L0-L3, and upper halves into L4-L7
+            //   Lower half contains origin (x,y,z) and TMax
+            //   Upper half contains directions(x,y,z), and byte offset from start of ray stream
+            //
             // Using 128-bit loads and inserts is preferable to 256-bit loads and cross-permutes
             //  The inserts can be fused with the loads, and Haswell can issue them on more ports that way
             #define LOADPS(x) _mm_load_ps((float*)(x))
@@ -290,17 +299,17 @@ namespace _INTERNAL{
            __m256 l7 = _mm256_set_m128( LOADPS(pRays + pOffsets[7]+16), LOADPS(pRays+pOffsets[6]+16));
             #undef LOADPS
 
-            // unpacklo(x,y) -->   x0 y0 x1 y1 x4 y4 x5 y5 
-           __m256 t0 = _mm256_unpacklo_ps(l0,l1); // 00 11 00 11
-           __m256 t1 = _mm256_unpacklo_ps(l2,l3); // 00 11 00 11
-           __m256 t2 = _mm256_unpackhi_ps(l0,l1); // 22 33 22 33
-           __m256 t3 = _mm256_unpackhi_ps(l2,l3); // 22 33 22 33
            __m256 t4 = _mm256_unpacklo_ps(l4,l5); // 44 55 44 55
            __m256 t5 = _mm256_unpacklo_ps(l6,l7); // 44 55 44 55       
-           __m256 t6 = _mm256_unpackhi_ps(l4,l5); // 66 77 66 77 
-           __m256 t7 = _mm256_unpackhi_ps(l6,l7); // 66 77 66 77
            t4 = RCPNR(t4); // both 4 and 5 get rcp'd eventually, so we can start them earlier
            t5 = RCPNR(t5); // to give the other ports something to do during this monstrous blob of unpacks
+           
+           __m256 t0     = _mm256_unpacklo_ps(l0,l1); // 00 11 00 11
+           __m256 t1     = _mm256_unpacklo_ps(l2,l3); // 00 11 00 11
+           __m256 t2     = _mm256_unpackhi_ps(l0,l1); // 22 33 22 33
+           __m256 t3     = _mm256_unpackhi_ps(l2,l3); // 22 33 22 33
+           __m256 t6     = _mm256_unpackhi_ps(l4,l5); // 66 77 66 77 
+           __m256 t7     = _mm256_unpackhi_ps(l6,l7); // 66 77 66 77
             __m256 Ox    = _mm256_unpacklo_ps(t0,t1); // 00 00 00 00
             __m256 Oy    = _mm256_unpackhi_ps(t0,t1); // 11 11 11 11
             __m256 Oz    = _mm256_unpacklo_ps(t2,t3); // 22 22 22 22
@@ -330,8 +339,6 @@ namespace _INTERNAL{
         uint8* pMasks        = pFrame->pMasks;
         const float* pAABB   = pFrame->pAABB;
     
-        size_t nPop0=0;
-        size_t nPop1=0;
         size_t g;
         size_t nTwos = (nGroups&~1); 
         size_t nHitPopulation=0;
@@ -553,122 +560,6 @@ namespace _INTERNAL{
     }
 
 
-    /*
-    static size_t __fastcall GroupTest2X( StackFrame* pFrame, size_t nGroups )
-    {
-        RayPacket** pPackets = pFrame->pActivePackets;
-        uint8* pMasks        = pFrame->pMasks;
-        const float* pAABB   = pFrame->pAABB;
-    
-        size_t nPop0=0;
-        size_t nPop1=0;
-        size_t g;
-        size_t nTwos = (nGroups&~1); 
-        size_t nHitPopulation=0;
-        for( g=0;  g<nTwos; g += 2 )
-        {
-            RayPacket& pack0 = *pPackets[g];
-            RayPacket& pack1 = *pPackets[g+1];
-       
-            //__m256 Bmin0  = _mm256_broadcast_ss( pAABB+0 );
-            //__m256 Bmax0  = _mm256_broadcast_ss( pAABB+3 );
-            //__m256 txmin0 = _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack0.Ox ),pack0.DInvx );
-            //__m256 txmax0 = _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack0.Ox ),pack0.DInvx );
-            //__m256 txmin1 = _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack1.Ox ),pack1.DInvx );
-            //__m256 txmax1 = _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack1.Ox ),pack1.DInvx );
-            //    
-            //__m256 Bmin1  = _mm256_broadcast_ss( pAABB+1 );
-            //__m256 Bmax1  = _mm256_broadcast_ss( pAABB+4 );
-            //__m256 tymin0 = _mm256_max_ps( txmin0, _mm256_mul_ps( _mm256_sub_ps( Bmin1, pack0.Oy ),pack0.DInvy  ) );
-            //__m256 tymax0 = _mm256_min_ps( txmax0, _mm256_mul_ps( _mm256_sub_ps( Bmax1, pack0.Oy ),pack0.DInvy  ) );
-            //__m256 tymin1 = _mm256_max_ps( txmin1, _mm256_mul_ps( _mm256_sub_ps( Bmin1, pack1.Oy ),pack1.DInvy  ) );
-            //__m256 tymax1 = _mm256_min_ps( txmax1, _mm256_mul_ps( _mm256_sub_ps( Bmax1, pack1.Oy ),pack1.DInvy  ) );
-            //
-            //__m256 Bmin2  = _mm256_broadcast_ss( pAABB+2 );
-            //__m256 Bmax2  = _mm256_broadcast_ss( pAABB+5 ); 
-            //__m256 tmin0  = _mm256_max_ps( tymin0, _mm256_mul_ps( _mm256_sub_ps( Bmin2, pack0.Oz ),pack0.DInvz ) );
-            //__m256 tmax0  = _mm256_min_ps( tymax0, _mm256_mul_ps( _mm256_sub_ps( Bmax2, pack0.Oz ),pack0.DInvz ) );
-            //__m256 tmin1  = _mm256_max_ps( tymin1, _mm256_mul_ps( _mm256_sub_ps( Bmin2, pack1.Oz ),pack1.DInvz  ) );
-            //__m256 tmax1  = _mm256_min_ps( tymax1, _mm256_mul_ps( _mm256_sub_ps( Bmax2, pack1.Oz ),pack1.DInvz  ) );
-        
-        
-            __m256 Bmin0  = _mm256_broadcast_ss( pAABB+0 );
-            __m256 Bmax0  = _mm256_broadcast_ss( pAABB+3 );
-            __m256 r0 = _mm256_mul_ps( pack0.Ox, pack0.DInvx );
-            __m256 r1 = _mm256_mul_ps( pack1.Ox, pack1.DInvx );
-            __m256 txmin0 = _mm256_fmsub_ps( Bmin0, pack0.DInvx, r0 );
-            __m256 txmax0 = _mm256_fmsub_ps( Bmax0, pack0.DInvx, r0 );
-            __m256 txmin1 = _mm256_fmsub_ps( Bmin0, pack1.DInvx, r1 );
-            __m256 txmax1 = _mm256_fmsub_ps( Bmax0, pack1.DInvx, r1 );
-        
-            __m256 Bmin1  = _mm256_broadcast_ss( pAABB+1 );
-            __m256 Bmax1  = _mm256_broadcast_ss( pAABB+4 );
-            r0 = _mm256_mul_ps( pack0.Oy, pack0.DInvy );
-            r1 = _mm256_mul_ps( pack1.Oy, pack1.DInvy );
-            __m256 tymin0 = _mm256_max_ps( txmin0,  _mm256_fmsub_ps( Bmin1, pack0.DInvy, r0 ) );
-            __m256 tymax0 = _mm256_min_ps( txmax0,  _mm256_fmsub_ps( Bmax1, pack0.DInvy, r0 ) );
-            __m256 tymin1 = _mm256_max_ps( txmin1,  _mm256_fmsub_ps( Bmin1, pack1.DInvy, r1 ) );
-            __m256 tymax1 = _mm256_min_ps( txmax1,  _mm256_fmsub_ps( Bmax1, pack1.DInvy, r1 ) );
-      
-            __m256 Bmin2  = _mm256_broadcast_ss( pAABB+2 );        
-            __m256 Bmax2  = _mm256_broadcast_ss( pAABB+5 ); 
-            r0 = _mm256_mul_ps( pack0.Oz, pack0.DInvz );
-            r1 = _mm256_mul_ps( pack1.Oz, pack1.DInvz );
-            __m256 tmin0  = _mm256_max_ps( tymin0, _mm256_fmsub_ps( Bmin2, pack0.DInvz, r0 ) );
-            __m256 tmax0  = _mm256_min_ps( tymax0, _mm256_fmsub_ps( Bmax2, pack0.DInvz, r0 ) );
-            __m256 tmin1  = _mm256_max_ps( tymin1, _mm256_fmsub_ps( Bmin2, pack1.DInvz, r1 ) );
-            __m256 tmax1  = _mm256_min_ps( tymax1, _mm256_fmsub_ps( Bmax2, pack1.DInvz, r1 ) );
-
-        
-            // andnot -> uses sign-bit trick for tmax>=0
-            __m256 l0   = _mm256_min_ps( tmax0, pack0.TMax );
-            __m256 l1   = _mm256_min_ps( tmax1, pack1.TMax );
-            __m256 hit0 = _mm256_andnot_ps( tmax0, _mm256_cmp_ps(tmin0,l0,_CMP_LE_OQ) );
-            __m256 hit1 = _mm256_andnot_ps( tmax1, _mm256_cmp_ps(tmin1,l1,_CMP_LE_OQ) );
-        
-            size_t mask0 = (size_t)_mm256_movemask_ps(hit0);
-            size_t mask1 = (size_t)_mm256_movemask_ps(hit1);
-            size_t nMergedMask = (mask1<<8)|mask0;
-        
-       
-            *((uint16*)(pMasks+g)) = (uint16) nMergedMask;
-            nHitPopulation += _mm_popcnt_u64(nMergedMask);        
-        }
-        
-        for( ; g<nGroups; g++ )
-        {
-            RayPacket& pack = *pPackets[g];
-            __m256 Bmin0  = _mm256_broadcast_ss( pAABB+0 );
-            __m256 Bmax0  = _mm256_broadcast_ss( pAABB+3 );
-            __m256 tmin0 = _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack.Ox ),pack.DInvx );
-            __m256 tmax0 = _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack.Ox ),pack.DInvx );
-            
-            Bmin0  = _mm256_broadcast_ss( pAABB+1 );
-            Bmax0  = _mm256_broadcast_ss( pAABB+4 );
-            tmin0  = _mm256_max_ps( tmin0, _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack.Oy ),pack.DInvy  ) );
-            tmax0  = _mm256_min_ps( tmax0, _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack.Oy ),pack.DInvy  ) );
-                
-            Bmin0  = _mm256_broadcast_ss( pAABB+2 );
-            Bmax0  = _mm256_broadcast_ss( pAABB+5 );
-            tmin0  = _mm256_max_ps( tmin0, _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack.Oz ),pack.DInvz ) );
-            tmax0  = _mm256_min_ps( tmax0, _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack.Oz ),pack.DInvz ) );
-        
-            __m256 l0  = _mm256_min_ps( tmax0, pack.TMax );
-                
-            __m256 hit = _mm256_andnot_ps( tmax0, _mm256_cmp_ps( tmin0, l0, _CMP_LE_OQ ) );
-
-            size_t mask = (size_t)_mm256_movemask_ps(hit);
-            nHitPopulation += _mm_popcnt_u64(mask);
-            pMasks[g] = (uint8) mask;
-        }
-
-        return nHitPopulation;
-    }
-    */
-
-    
-    
-
     static const __declspec(align(32))uint32 SHIFTS[]  = {0,1,2,3,4,5,6,7};
 
     static void __fastcall ReorderRays( StackFrame& frame, size_t nGroups )
@@ -686,7 +577,6 @@ namespace _INTERNAL{
         const char* pRays = (const char*) frame.pRays;
         for( size_t i=0; i<nGroups; i++ )
         {
-        
             uint32* __restrict pPacketRayIDs = pPackets[i]->RayOffsets;
         
        
@@ -717,7 +607,6 @@ namespace _INTERNAL{
             __m256i Quads   = _mm256_hadd_epi32(Doubles,Doubles);  // h0-h3, h0-h3, h0-h3,h0-h3,  h4-h7, h4-h7, h4-h7, h4-h7
             Quads = _mm256_inserti128_si256(_mm256_setzero_si256(),_mm256_castsi256_si128(Quads),0x1); // 0,0,0,0, h0-h3 .....
      
-            #define SHUFFLE(a,b,c,d) (a|(b<<2)|(c<<4)|(d<<6))
             __m256i m0  = _mm256_shuffle_epi32( hits,     SHUFFLE(0,0,2,2) ); // h0, h0, h2, h2, h4, h4, h6, h6
             __m256i m1  = _mm256_shuffle_epi32( Doubles,  SHUFFLE(0,0,0,0) ); // h0+h1 ...., h4+h5,....
             m0  = _mm256_blend_epi32( _mm256_setzero_si256(), m0, 0xAA ); // 10101010 ->  0 h0  0   h2 0 h4  0   h6
@@ -757,6 +646,7 @@ namespace _INTERNAL{
             size_t nHitPop = _mm_popcnt_u64(frame.pMasks[i]);
             nHitLoc  += nHitPop ;
             nMissLoc -= (8-nHitPop);
+            
         
            // The bit-twiddling loops that it replaced...
            /*
@@ -786,20 +676,80 @@ namespace _INTERNAL{
             */
         }
 
-      //  
-      // for( size_t i=0; i<nReorder; i++ )
-      // { 
-      //     READ_RAYS( pPackets+pReorderIDs[i], (const byte*)pRays, pIDs+8*i );
-      // }
+    
             
         ReadRaysLoopArgs args;
         args.pPackets = pPackets;
         args.pRayIDs = pIDs;
         args.pRays = (const byte*)pRays;
         ReadRaysLoop(args,nGroups);
-
     }
 
+
+
+    
+    static void __forceinline TransposePacket( __m256* pOut, __m256* p )
+    {
+        // Transpose a set of 8 m256's  
+        //  a 0 1 2 3 4 5 6 7
+        //  b ....
+        //  c ....
+
+        //  ===>
+        //  a0 b0 c0 d0 e0 f0 g0 h0
+        //  a1 b1 c1 d1 e1 f1 g1 h1 
+        //  ....
+        //
+        __m256* pLower = (__m256*)p;
+        __m256* pUpper = (__m256*)(((char*)p)+16);
+        
+        #define LOADPS(x) _mm_load_ps((float*)(x))
+        __m256 l0 = _mm256_set_m128( LOADPS(pLower + 4), LOADPS(pLower+0) ); //0123(a) 0123(e)
+        __m256 l1 = _mm256_set_m128( LOADPS(pLower + 5), LOADPS(pLower+1) ); //0123(b) 0123(f)
+        __m256 l2 = _mm256_set_m128( LOADPS(pLower + 6), LOADPS(pLower+2) ); //0123(c) 0123(g)
+        __m256 l3 = _mm256_set_m128( LOADPS(pLower + 7), LOADPS(pLower+3) ); //0123(d) 0123(h)
+        __m256 l4 = _mm256_set_m128( LOADPS(pUpper + 4), LOADPS(pUpper+0) ); //4567(a) 4567(e)
+        __m256 l5 = _mm256_set_m128( LOADPS(pUpper + 5), LOADPS(pUpper+1) ); //4567(b) 4567(f)
+        __m256 l6 = _mm256_set_m128( LOADPS(pUpper + 6), LOADPS(pUpper+2) ); //4567(c) 4567(g)
+        __m256 l7 = _mm256_set_m128( LOADPS(pUpper + 7), LOADPS(pUpper+3) ); //4567(d) 4567(h)
+        #undef LOADPS
+
+        __m256 t0 = _mm256_shuffle_ps( l0, l1, SHUFFLE(0,1,0,1) ); // a0a1 b0b1  e0e1  f0f1
+        __m256 t1 = _mm256_shuffle_ps( l2, l3, SHUFFLE(0,1,0,1) ); // c0c1 d0d1  g0g1  h0h1
+        __m256 t2 = _mm256_unpacklo_ps(t0,t1);                     // a0c0  a1c1  e0 g0  e1g1
+        __m256 t3 = _mm256_unpackhi_ps(t0,t1);                     // a0c0  a1c1  e0 g0  e1g1
+        t0 = _mm256_unpacklo_ps(t2,t3);                            // a0c0  a1c1  e0 g0  e1g1
+        t1 = _mm256_unpackhi_ps(t2,t3);                            // b0d0  b1d1  f0 h0  f1h1
+        _mm256_store_ps( (float*)(pOut+0),t0);                     // a0 b0 c0 d0 e0 f0 g0 h0
+        _mm256_store_ps( (float*)(pOut+1),t1);                     // a1 b1 c1 d1 e1 f1 g1 h1
+
+        t0 = _mm256_shuffle_ps( l0, l1, SHUFFLE(2,3,2,3) ); // 2 and 3
+        t1 = _mm256_shuffle_ps( l2, l3, SHUFFLE(2,3,2,3) ); // 
+        t2 = _mm256_unpacklo_ps(t0,t1);                     // 
+        t3 = _mm256_unpackhi_ps(t0,t1);                     // 
+        t0 = _mm256_unpacklo_ps(t2,t3);                     // 
+        t1 = _mm256_unpackhi_ps(t2,t3);                     // 
+        _mm256_store_ps( (float*)(pOut+2),t0);              // 
+        _mm256_store_ps( (float*)(pOut+3),t1);              // 
+
+        t0 = _mm256_shuffle_ps( l4, l5, SHUFFLE(0,1,0,1) ); // 4 and 5
+        t1 = _mm256_shuffle_ps( l6, l7, SHUFFLE(0,1,0,1) ); // 
+        t2 = _mm256_unpacklo_ps(t0,t1);                     // 
+        t3 = _mm256_unpackhi_ps(t0,t1);                     // 
+        t0 = _mm256_unpacklo_ps(t2,t3);                     // 
+        t1 = _mm256_unpackhi_ps(t2,t3);                     // 
+        _mm256_store_ps( (float*)(pOut+4),t0);              // 
+        _mm256_store_ps( (float*)(pOut+5),t1);              // 
+
+        t0 = _mm256_shuffle_ps( l4, l5, SHUFFLE(2,3,2,3) ); // 6 and 7
+        t1 = _mm256_shuffle_ps( l6, l7, SHUFFLE(2,3,2,3) ); // 
+        t2 = _mm256_unpacklo_ps(t0,t1);                     // 
+        t3 = _mm256_unpackhi_ps(t0,t1);                     // 
+        t0 = _mm256_unpacklo_ps(t2,t3);                     // 
+        t1 = _mm256_unpackhi_ps(t2,t3);                     // 
+        _mm256_store_ps( (float*)(pOut+6),t0);              // 
+        _mm256_store_ps( (float*)(pOut+7),t1);              // 
+    }
 
 
     static size_t RemoveMissedGroups( RayPacket** __restrict pGroups, uint8* __restrict pMasks, size_t nGroups )

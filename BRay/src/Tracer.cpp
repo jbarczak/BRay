@@ -111,11 +111,7 @@ namespace _INTERNAL{
                 _mm256_sub_ps( _mm256_broadcast_ss( &P0[1] ), vOy ),
                 _mm256_sub_ps( _mm256_broadcast_ss( &P0[2] ), vOz ),
             };
-            __m256 v0AxD[] = {
-                _mm256_fmsub_ps( v0A[1], vDz, _mm256_mul_ps( v0A[2], vDy ) ),
-                _mm256_fmsub_ps( v0A[2], vDx, _mm256_mul_ps( v0A[0], vDz ) ),
-                _mm256_fmsub_ps( v0A[0], vDy, _mm256_mul_ps( v0A[1], vDx ) )
-            };
+          
 
             //V = ((p1 - p0)x(p0 -p2)).d
             //Va = ((p1 - p0)x(p0 -p2)).(p0 -a)
@@ -139,6 +135,11 @@ namespace _INTERNAL{
             __m256 v02_y = _mm256_broadcast_ss(&v02[1]);
             __m256 v02_z = _mm256_broadcast_ss(&v02[2]);
             
+            __m256 v0AxD[] = {
+                _mm256_fmsub_ps( v0A[1], vDz, _mm256_mul_ps( v0A[2], vDy ) ),
+                _mm256_fmsub_ps( v0A[2], vDx, _mm256_mul_ps( v0A[0], vDz ) ),
+                _mm256_fmsub_ps( v0A[0], vDy, _mm256_mul_ps( v0A[1], vDx ) )
+            };
             __m256 A = _mm256_fmadd_ps( v0AxD[2], v02_z,
                                          _mm256_fmadd_ps( v0AxD[1],  v02_y,
                                          _mm256_mul_ps( v0AxD[0],  v02_x )));
@@ -321,36 +322,172 @@ namespace _INTERNAL{
 
 
 
-    static __forceinline BVHNode** PushOrdered( BVHNode** __restrict pStack, BVHNode* __restrict pRoot, size_t octant )
-    {
-        BVHNode* pLeftKid = pRoot->GetLeftChild();
-        size_t axis = pRoot->GetSplitAxis();
-        size_t lf   = (octant >> axis) & 1; // ray dir is negative -->  push left first --> visit right first
+
+    template< int OCTANT >
+    static void PacketTrace_Octant( RayPacket& pack, void* pStackBottom, BVHNode* pRoot, StackFrame& frame )
+    {         
+
+        BVHNode** pStack = (BVHNode**) pStackBottom;
+        *(pStack++) = pRoot;
+
+        _mm_prefetch((char*)pRoot, _MM_HINT_T0 );
+        PacketISectCache ISect;
+        PrepIntersectCache( &ISect, &pack, frame.pRays );
+
         
-        pStack[0] = pLeftKid  + (lf^1);
-        pStack[1] = pLeftKid  + lf;
-        return pStack+2;
+        __m256 OD[] = { 
+            _mm256_mul_ps( pack.DInvx, pack.Ox ),
+            _mm256_mul_ps( pack.DInvy, pack.Oy ),
+            _mm256_mul_ps( pack.DInvz, pack.Oz ),
+        };
+
+
+        while( pStack != pStackBottom )
+        {
+            BVHNode* pN = *(--pStack);
+            if( pN->IsLeaf() )
+            {
+                // visit leaf
+                const TriList* pList = pN->GetTriList();
+                //TriISectPacket_Preproc_List(pList, &pack, &frame );
+                TriISectPacket_ISectCache( pList, &pack, &ISect );
+            }
+            else
+            {
+                BVHNode* pNLeft  = pN->GetLeftChild();
+                BVHNode* pNRight = pN->GetRightChild();
+                const float* __restrict pLeft  = (const float*)pNLeft->GetAABB();
+                const float* __restrict pRight = (const float*)pNRight->GetAABB();
+            
+                // fetch AABB.  each of the min/max vectors has the same data replicated into low and high lanes
+                // bbmin(xyz), bbmax(xyz)
+                BVHNode* pL = pN->GetLeftChild();
+                BVHNode* pR = pN->GetRightChild();
+                __m256 min0 = _mm256_broadcast_ps( (const __m128*)(pLeft)   );
+                __m256 min1 = _mm256_broadcast_ps( (const __m128*)(pRight)   );
+                __m256 max0 = _mm256_broadcast_ps( (const __m128*)(pLeft+3) );
+                __m256 max1 = _mm256_broadcast_ps( (const __m128*)(pRight+3) );
+
+                // swap planes based on octant
+                __m256 bbmin0 = _mm256_blend_ps(min0, max0, (OCTANT|OCTANT<<4) );
+                __m256 bbmax0 = _mm256_blend_ps(max0, min0, (OCTANT|OCTANT<<4) );
+                __m256 bbmin1 = _mm256_blend_ps(min1, max1, (OCTANT|OCTANT<<4) );
+                __m256 bbmax1 = _mm256_blend_ps(max1, min1, (OCTANT|OCTANT<<4) );
+              
+                // prefetch left/right children since we'll probably need them
+                _mm_prefetch( (char*) pNLeft->GetPrefetch(),  _MM_HINT_T0 );
+                _mm_prefetch( (char*) pNRight->GetPrefetch(), _MM_HINT_T0 );
+
+                // axis tests
+                __m256 D = _mm256_load_ps( (float*)&pack.DInvx);
+                __m256 O = _mm256_load_ps( (float*) (OD+0) );
+                __m256 Bmin0 = _mm256_permute_ps(bbmin0, 0x00);
+                __m256 Bmax0 = _mm256_permute_ps(bbmax0, 0x00);
+                __m256 Bmin1 = _mm256_permute_ps(bbmin1, 0x00);
+                __m256 Bmax1 = _mm256_permute_ps(bbmax1, 0x00);
+                __m256 tmin0 = _mm256_fmsub_ps( Bmin0, D, O );
+                __m256 tmax0 = _mm256_fmsub_ps( Bmax0, D, O );
+                __m256 tmin1 = _mm256_fmsub_ps( Bmin1, D, O );
+                __m256 tmax1 = _mm256_fmsub_ps( Bmax1, D, O );
+
+                D = _mm256_load_ps( (float*)&pack.DInvy);
+                O = _mm256_load_ps( (float*) (OD+1) );
+                Bmin0 = _mm256_permute_ps(bbmin0, 0x55); // 0101
+                Bmax0 = _mm256_permute_ps(bbmax0, 0x55);
+                Bmin1 = _mm256_permute_ps(bbmin1, 0x55);
+                Bmax1 = _mm256_permute_ps(bbmax1, 0x55);
+                __m256 t0 = _mm256_fmsub_ps( Bmin0, D, O );
+                __m256 t1 = _mm256_fmsub_ps( Bmax0, D, O );
+                __m256 t2 = _mm256_fmsub_ps( Bmin1, D, O );
+                __m256 t3 = _mm256_fmsub_ps( Bmax1, D, O );
+                tmin0 = _mm256_max_ps( tmin0, t0 );
+                tmax0 = _mm256_min_ps( tmax0, t1 );
+                tmin1 = _mm256_max_ps( tmin1, t2 );
+                tmax1 = _mm256_min_ps( tmax1, t3 );
+
+                D = _mm256_load_ps( (float*)&pack.DInvz);
+                O = _mm256_load_ps( (float*) (OD+2) );               
+                Bmin0 = _mm256_permute_ps(bbmin0, 0xAA); // 1010
+                Bmax0 = _mm256_permute_ps(bbmax0, 0xAA);
+                Bmin1 = _mm256_permute_ps(bbmin1, 0xAA);
+                Bmax1 = _mm256_permute_ps(bbmax1, 0xAA);
+                t0 = _mm256_fmsub_ps( Bmin0, D, O );
+                t1 = _mm256_fmsub_ps( Bmax0, D, O );
+                t2 = _mm256_fmsub_ps( Bmin1, D, O );
+                t3 = _mm256_fmsub_ps( Bmax1, D, O );
+                tmin0 = _mm256_max_ps( tmin0, t0  );
+                tmax0 = _mm256_min_ps( tmax0, t1  );
+                tmin1 = _mm256_max_ps( tmin1, t2  );
+                tmax1 = _mm256_min_ps( tmax1, t3  );
+
+                __m256 limL  = _mm256_min_ps( tmax0, pack.TMax );
+                __m256 limR  = _mm256_min_ps( tmax1, pack.TMax );
+
+                // using sign-bit trick for tmax >= 0
+                t0 =  _mm256_cmp_ps( tmin0, limL, _CMP_LE_OQ );
+                t1 =  _mm256_cmp_ps( tmin1, limR, _CMP_LE_OQ );
+                __m256 hitL = _mm256_andnot_ps( tmax0, t0 );
+                __m256 hitR = _mm256_andnot_ps( tmax1, t1 );
+
+                size_t maskhitL   = _mm256_movemask_ps(hitL);
+                size_t maskhitR   = _mm256_movemask_ps(hitR);
+                size_t maskhitB = maskhitL & maskhitR;
+                if( maskhitB )
+                {
+                    __m256 LFirst = _mm256_cmp_ps( tmin0, tmin1, _CMP_LT_OQ );
+                    size_t lf = _mm256_movemask_ps(LFirst) & maskhitB;
+                    size_t rf = ~lf & maskhitB;
+
+                    if( _mm_popcnt_u64( lf ) > _mm_popcnt_u64( rf ) )
+                    {
+                        pStack[0] = pNRight;
+                        pStack[1] = pNLeft;
+                        pStack += 2;
+                    }
+                    else
+                    {
+                        pStack[0] = pNLeft;
+                        pStack[1] = pNRight;
+                        pStack += 2;
+                    }
+                }
+                else
+                {
+                    if( maskhitL )
+                    {
+                        *(pStack++) = pNLeft;
+                    }
+                    if( maskhitR )
+                    {
+                        *(pStack++) = pNRight;
+                    }
+                }
+            }
+        }
+
+        WritebackIntersectCache( &ISect, &pack, &frame );
     }
 
-  
-
-    /*
-    static void foo( RayPacket& pack, BVHNode* pN, uint octant )
-    {
-        __m256 rx = _mm256_mul_ps( pack.Ox, pack.DInvx );
-        __m256 ry = _mm256_mul_ps( pack.Oy, pack.DInvy );
-        __m256 rz = _mm256_mul_ps( pack.Oz, pack.DInvz );
     
-        // pick min/max if octant sign is zero, reverse otherwise
-        __m128i vOctant = _mm_set_epi32( 0, octant&4 ? 0xffffffff : 0, 
-                                            octant&2 ? 0xffffffff : 0,
-                                            octant&1 ? 0xffffffff : 0 );
-        __m256 octant_select = _mm256_castsi256_ps(_mm256_broadcastsi128_si256(vOctant));
-
-      
-    }*/
-
-
+    typedef void (*PTRACE_OCTANT)(RayPacket& pack, void* pStackBottom, BVHNode* pRoot, StackFrame& frame );
+    PTRACE_OCTANT OctantDispatch[] = {
+        &PacketTrace_Octant<0>,
+        &PacketTrace_Octant<1>,
+        &PacketTrace_Octant<2>,
+        &PacketTrace_Octant<3>,
+        &PacketTrace_Octant<4>,
+        &PacketTrace_Octant<5>,
+        &PacketTrace_Octant<6>,
+        &PacketTrace_Octant<7>,
+    };
+  
+    static void PacketTrace_Octant( RayPacket& pack, uint octant, void* pStackBottom, BVHNode* pRoot, StackFrame& frame )
+    {
+        OctantDispatch[octant](pack, pStackBottom,pRoot,frame);
+    }
+    
+    
+    /*
     static void PacketTrace_Octant( RayPacket& pack, uint octant, void* pStackBottom, BVHNode* pRoot, StackFrame& frame )
     {
         BVHNode** pStack = (BVHNode**) pStackBottom;
@@ -504,159 +641,9 @@ namespace _INTERNAL{
 
         WritebackIntersectCache( &ISect, &pack, &frame );
     }
-
-
-#if 0
-    static void PacketTrace_Octant( RayPacket& pack, uint octant, void* pStackBottom, BVHNode* pRoot, StackFrame& frame )
-    {
-
-        BVHNode** pStack = (BVHNode**) pStackBottom;
-        *(pStack++) = pRoot;
-
-        _mm_prefetch((char*)pRoot, _MM_HINT_T0 );
-        PacketISectCache ISect;
-        PrepIntersectCache( &ISect, &pack, frame.pRays );
-
-        // positive sign:  first=0, last=3
-        // negative sign:  first=3, last=0
-        uint xfirst = (octant&1) ? 3 : 0;
-        uint yfirst = (octant&2) ? 3 : 0;
-        uint zfirst = (octant&4) ? 3 : 0;
-
-          
-        __m256 rx = _mm256_mul_ps( pack.Ox, pack.DInvx );
-        __m256 ry = _mm256_mul_ps( pack.Oy, pack.DInvy );
-        __m256 rz = _mm256_mul_ps( pack.Oz, pack.DInvz );
-     
-        while( pStack != pStackBottom )
-        {
-            BVHNode* pN = *(--pStack);
-            if( pN->IsLeaf() )
-            {
-                // visit leaf
-                const TriList* pList = pN->GetTriList();
-                //TriISectPacket_Preproc_List(pList, &pack, &frame );
-                TriISectPacket_ISectCache( pList, &pack, &ISect );
-            }
-            else
-            {
-                BVHNode* pNLeft  = pN->GetLeftChild();
-                BVHNode* pNRight = pN->GetRightChild();
-                const float* __restrict pLeft  = (const float*)pNLeft->GetAABB();
-                const float* __restrict pRight = (const float*)pNRight->GetAABB();
-          
+    */
     
-                _mm_prefetch( (char*) pNLeft->GetPrefetch(),  _MM_HINT_T0 );
-                _mm_prefetch( (char*) pNRight->GetPrefetch(), _MM_HINT_T0 );
-
-                
-                // test children, push far ones, descend to near ones
-                __m256 Bmin0  = _mm256_broadcast_ss( pLeft  + xfirst      );
-                __m256 Bmax0  = _mm256_broadcast_ss( pLeft  + (xfirst^3)  );
-                __m256 Bmin1  = _mm256_broadcast_ss( pRight + xfirst      );
-                __m256 Bmax1  = _mm256_broadcast_ss( pRight + (xfirst^3)  );
-               
-                __m256 tmin0 = _mm256_fmsub_ps( Bmin0, pack.DInvx, rx );
-                __m256 tmax0 = _mm256_fmsub_ps( Bmax0, pack.DInvx, rx );
-                __m256 tmin1 = _mm256_fmsub_ps( Bmin1, pack.DInvx, rx );
-                __m256 tmax1 = _mm256_fmsub_ps( Bmax1, pack.DInvx, rx );
-
-                Bmin0  = _mm256_broadcast_ss( pLeft  + 1 + yfirst      );
-                Bmax0  = _mm256_broadcast_ss( pLeft  + 1 + (yfirst^3)  );
-                Bmin1  = _mm256_broadcast_ss( pRight + 1 + yfirst      );
-                Bmax1  = _mm256_broadcast_ss( pRight + 1 + (yfirst^3)  );
-                tmin0 = _mm256_max_ps( tmin0, _mm256_fmsub_ps( Bmin0, pack.DInvy, ry ) );
-                tmax0 = _mm256_min_ps( tmax0, _mm256_fmsub_ps( Bmax0, pack.DInvy, ry ) );
-                tmin1 = _mm256_max_ps( tmin1, _mm256_fmsub_ps( Bmin1, pack.DInvy, ry ) );
-                tmax1 = _mm256_min_ps( tmax1, _mm256_fmsub_ps( Bmax1, pack.DInvy, ry ) );
-
-                Bmin0  = _mm256_broadcast_ss( pLeft  + 2 + zfirst     );
-                Bmax0  = _mm256_broadcast_ss( pLeft  + 2 + (zfirst^3) );
-                Bmin1  = _mm256_broadcast_ss( pRight + 2 + zfirst     );
-                Bmax1  = _mm256_broadcast_ss( pRight + 2 + (zfirst^3) );
-                tmin0 = _mm256_max_ps( tmin0, _mm256_fmsub_ps( Bmin0, pack.DInvz, rz ) );
-                tmax0 = _mm256_min_ps( tmax0, _mm256_fmsub_ps( Bmax0, pack.DInvz, rz ) );
-                tmin1 = _mm256_max_ps( tmin1, _mm256_fmsub_ps( Bmin1, pack.DInvz, rz ) );
-                tmax1 = _mm256_min_ps( tmax1, _mm256_fmsub_ps( Bmax1, pack.DInvz, rz ) );
-
-
-                /*
-                __m256 Bmin0  = _mm256_broadcast_ss( pLeft  + xfirst      );
-                __m256 Bmax0  = _mm256_broadcast_ss( pLeft  + (xfirst^3)  );
-                __m256 Bmin1  = _mm256_broadcast_ss( pRight + xfirst      );
-                __m256 Bmax1  = _mm256_broadcast_ss( pRight + (xfirst^3)  );
-                __m256 tmin0 = _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack.Ox ),pack.DInvx );
-                __m256 tmax0 = _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack.Ox ),pack.DInvx );
-                __m256 tmin1 = _mm256_mul_ps( _mm256_sub_ps( Bmin1, pack.Ox ),pack.DInvx );
-                __m256 tmax1 = _mm256_mul_ps( _mm256_sub_ps( Bmax1, pack.Ox ),pack.DInvx );
-                Bmin0  = _mm256_broadcast_ss( pLeft  + 1 + yfirst      );
-                Bmax0  = _mm256_broadcast_ss( pLeft  + 1 + (yfirst^3)  );
-                Bmin1  = _mm256_broadcast_ss( pRight + 1 + yfirst      );
-                Bmax1  = _mm256_broadcast_ss( pRight + 1 + (yfirst^3)  );
-                tmin0  = _mm256_max_ps( tmin0, _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack.Oy ),pack.DInvy  ) );
-                tmax0  = _mm256_min_ps( tmax0, _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack.Oy ),pack.DInvy  ) );
-                tmin1  = _mm256_max_ps( tmin1, _mm256_mul_ps( _mm256_sub_ps( Bmin1, pack.Oy ),pack.DInvy  ) );
-                tmax1  = _mm256_min_ps( tmax1, _mm256_mul_ps( _mm256_sub_ps( Bmax1, pack.Oy ),pack.DInvy  ) );
-    
-                Bmin0  = _mm256_broadcast_ss( pLeft  + 2 + zfirst     );
-                Bmax0  = _mm256_broadcast_ss( pLeft  + 2 + (zfirst^3) );
-                Bmin1  = _mm256_broadcast_ss( pRight + 2 + zfirst     );
-                Bmax1  = _mm256_broadcast_ss( pRight + 2 + (zfirst^3) );
-                tmin0  = _mm256_max_ps( tmin0, _mm256_mul_ps( _mm256_sub_ps( Bmin0, pack.Oz ),pack.DInvz ) );
-                tmax0  = _mm256_min_ps( tmax0, _mm256_mul_ps( _mm256_sub_ps( Bmax0, pack.Oz ),pack.DInvz ) );
-                tmin1  = _mm256_max_ps( tmin1, _mm256_mul_ps( _mm256_sub_ps( Bmin1, pack.Oz ),pack.DInvz ) );
-                tmax1  = _mm256_min_ps( tmax1, _mm256_mul_ps( _mm256_sub_ps( Bmax1, pack.Oz ),pack.DInvz ) );
-            
-            */
-                __m256 limL  = _mm256_min_ps( tmax0, pack.TMax );
-                __m256 limR  = _mm256_min_ps( tmax1, pack.TMax );
-
-                // using sign-bit trick for tmax >= 0
-                __m256 hitL = _mm256_andnot_ps( tmax0, _mm256_cmp_ps( tmin0, limL, _CMP_LE_OQ ) );
-                __m256 hitR = _mm256_andnot_ps( tmax1, _mm256_cmp_ps( tmin1, limR, _CMP_LE_OQ ) );
-
-                size_t maskhitL   = _mm256_movemask_ps(hitL);
-                size_t maskhitR   = _mm256_movemask_ps(hitR);
-                size_t maskhitB = maskhitL & maskhitR;
-                if( maskhitB )
-                {
-                    __m256 LFirst = _mm256_cmp_ps( tmin0, tmin1, _CMP_LT_OQ );
-                    size_t lf = _mm256_movemask_ps(LFirst) & maskhitB;
-                    size_t rf = ~lf & maskhitB;
-
-                    if( _mm_popcnt_u64( lf ) > _mm_popcnt_u64( rf ) )
-                    {
-                        pStack[0] = pNRight;
-                        pStack[1] = pNLeft;
-                        pStack += 2;
-                    }
-                    else
-                    {
-                        pStack[0] = pNLeft;
-                        pStack[1] = pNRight;
-                        pStack += 2;
-                    }
-                }
-                else
-                {
-                    if( maskhitL )
-                    {
-                        *(pStack++) = pNLeft;
-                    }
-                    if( maskhitR )
-                    {
-                        *(pStack++) = pNRight;
-                    }
-                }
-            }
-        }
-
-        WritebackIntersectCache( &ISect, &pack, &frame );
-    }
-#endif
-    
-
-
+  
     void AdaptiveTrace( void* pStackMem, StackFrame& frame, uint nRayOctant )
     {
         struct Stack
@@ -735,6 +722,7 @@ namespace _INTERNAL{
             else if( nGroups <= 1 )
             {
                 // if we're down to a single group, dispatch single packet traversal 
+               
                 for( uint g=0; g<nGroups; g++ )
                 {
                     PacketTrace_Octant( *frame.pActivePackets[g],nRayOctant, pStack, pN,frame );                   
@@ -743,29 +731,18 @@ namespace _INTERNAL{
             else
             {
                 // push subtrees in correct order
-                size_t axis = (1<<pN->GetSplitAxis());
-                if( (nRayOctant & axis ) )  
-                {
-                    // right, then left
-                    pStack[0].nGroups = nGroups;
-                    pStack[0].pN = pN->GetLeftChild();
-                    pStack[0].nRayPop = nHitPopulation;
-                    pStack[1].nGroups = nGroups;
-                    pStack[1].pN = pN->GetRightChild();
-                    pStack[1].nRayPop = nHitPopulation;
-                    pStack += 2;
-                }
-                else
-                {
-                    // left, then right
-                    pStack[0].nGroups = nGroups;
-                    pStack[0].pN = pN->GetRightChild();
-                    pStack[0].nRayPop = nHitPopulation;
-                    pStack[1].nGroups = nGroups;
-                    pStack[1].pN = pN->GetLeftChild();
-                    pStack[1].nRayPop = nHitPopulation;
-                    pStack += 2;
-                }
+                size_t axis = pN->GetSplitAxis();
+                size_t lf   = (nRayOctant >> axis) & 1; // ray dir is negative -->  visit left first --> push right first
+     
+                BVHNode* pSecond = pN->GetLeftChild() + (lf^1);
+                BVHNode* pFirst  = pN->GetLeftChild() + lf;
+                pStack[0].nGroups = nGroups;
+                pStack[0].pN      = pSecond;
+                pStack[0].nRayPop = nHitPopulation;
+                pStack[1].nGroups = nGroups;
+                pStack[1].pN      = pFirst;
+                pStack[1].nRayPop = nHitPopulation;
+                pStack += 2;
             }
         }
     }

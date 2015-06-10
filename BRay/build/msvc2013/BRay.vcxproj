@@ -36,7 +36,9 @@
     <ClCompile Include="..\..\src\API.cpp" />
     <ClCompile Include="..\..\src\Malloc.cpp" />
     <ClCompile Include="..\..\src\PoolAllocator.cpp" />
-    <ClCompile Include="..\..\src\Tracer.cpp" />
+    <ClCompile Include="..\..\src\Tracer.cpp">
+      <AssemblerOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">AssemblyAndSourceCode</AssemblerOutput>
+    </ClCompile>
     <ClCompile Include="..\..\src\Tracer_Occlusion.cpp" />
   </ItemGroup>
   <ItemGroup>
