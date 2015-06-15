@@ -560,15 +560,79 @@ namespace _INTERNAL{
     }
 
 
+    static const __m128i SHUFFLE_TABLE[16] = {
+         _mm_setr_epi8(12,13,14,15, 8, 9,10,11, 4, 5, 6, 7, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3,12,13,14,15, 8, 9,10,11, 4, 5, 6, 7),
+         _mm_setr_epi8( 4, 5, 6, 7,12,13,14,15, 8, 9,10,11, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3, 4, 5, 6, 7,12,13,14,15, 8, 9,10,11),
+         _mm_setr_epi8( 8, 9,10,11,12,13,14,15, 4, 5, 6, 7, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3, 8, 9,10,11,12,13,14,15, 4, 5, 6, 7),
+         _mm_setr_epi8( 4, 5, 6, 7, 8, 9,10,11,12,13,14,15, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15),
+
+         _mm_setr_epi8(12,13,14,15, 8, 9,10,11, 4, 5, 6, 7, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3,12,13,14,15, 8, 9,10,11, 4, 5, 6, 7),
+         _mm_setr_epi8( 4, 5, 6, 7,12,13,14,15, 8, 9,10,11, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3, 4, 5, 6, 7,12,13,14,15, 8, 9,10,11),
+         _mm_setr_epi8( 8, 9,10,11,12,13,14,15, 4, 5, 6, 7, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3, 8, 9,10,11,12,13,14,15, 4, 5, 6, 7),
+         _mm_setr_epi8( 4, 5, 6, 7, 8, 9,10,11,12,13,14,15, 0, 1, 2, 3),
+         _mm_setr_epi8( 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15),
+    };
+    static void __fastcall ReorderRays( StackFrame& frame, size_t nGroups )
+    {        
+        RayPacket** pPackets = frame.pActivePackets;
+   
+        uint32 pReorderIDs[MAX_TRACER_SIZE];
+   
+        size_t nHits   = 0;
+        size_t nFirstMiss = 8*nGroups;
+
+        const char* pRays = (const char*) frame.pRays;
+        for( size_t i=0; i<nGroups; i++ )
+        {
+            uint32* __restrict pPacketRayIDs = pPackets[i]->RayOffsets;
+   
+            uint64 hits    = frame.pMasks[i];
+            uint64 hit_lo  = (hits & 0x0f);
+            uint64 hit_hi  = (hits & 0xf0)>>4;
+            uint64 pop_lo  = _mm_popcnt_u64(hit_lo);
+            uint64 pop_hi  = _mm_popcnt_u64(hit_hi);
+
+            // load lo/hi ID pairs
+            __m128i id_lo = _mm_load_si128( (__m128i*) pPacketRayIDs );
+            __m128i id_hi = _mm_load_si128( (__m128i*) (pPacketRayIDs+4) );
+            
+            // store hit/miss iDs
+            __m128i shuf_lo   = _mm_shuffle_epi8( id_lo, SHUFFLE_TABLE[hit_lo] );
+            __m128i shuf_hi   = _mm_shuffle_epi8( id_hi, SHUFFLE_TABLE[hit_hi] );
+            _mm_storeu_si128( (__m128i*)&pReorderIDs[nHits], shuf_lo );
+            nHits      +=  pop_lo;
+            _mm_storeu_si128( (__m128i*)&pReorderIDs[nHits], shuf_hi );
+            nHits      +=  pop_hi;
+
+            // NOTE: Hits MUST be written before misses, or a full-hit packet can corrupt the miss area
+            _mm_storeu_si128( (__m128i*)&pReorderIDs[nFirstMiss-4], shuf_lo );
+            nFirstMiss -= 4-pop_lo;
+            _mm_storeu_si128( (__m128i*)&pReorderIDs[nFirstMiss-4], shuf_hi );
+            nFirstMiss -= 4-pop_hi;
+        }
+
+        ReadRaysLoopArgs args;
+        args.pPackets = pPackets;
+        args.pRayIDs = pReorderIDs;
+        args.pRays = (const byte*)pRays;
+        ReadRaysLoop(args,nGroups);
+    }
+    
+
+#if 0
     static const __declspec(align(32))uint32 SHIFTS[]  = {0,1,2,3,4,5,6,7};
 
     static void __fastcall ReorderRays( StackFrame& frame, size_t nGroups )
     {        
         RayPacket** pPackets = frame.pActivePackets;
 
-        for( size_t i=0; i<nGroups; i++ )
-            _mm_prefetch( (char*)(pPackets[i]->RayOffsets), _MM_HINT_T0 );
-   
         uint32 pIDs[MAX_TRACER_SIZE];
    
         size_t nHitLoc  = 0;
@@ -616,16 +680,7 @@ namespace _INTERNAL{
             nMissLoc -= (8-nHitPop);
 
             __m128i addr = _mm_blendv_epi8(prefix_miss,prefix_hit,vhit_mask);
-           
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[0],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[1],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[2],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[3],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[4],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[5],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[6],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[7],_MM_HINT_T0 );
-
+      
             pIDs[ _mm_extract_epi16(addr,0) ] = pPacketRayIDs[0]; 
             pIDs[ _mm_extract_epi16(addr,1) ] = pPacketRayIDs[1]; 
             pIDs[ _mm_extract_epi16(addr,2) ] = pPacketRayIDs[2]; 
@@ -637,6 +692,7 @@ namespace _INTERNAL{
 
               
             /*
+            // Original prefix sum
             __m256i ONES    = BROADCASTINT(1);
             __m256i INDEX   = _mm256_load_si256((__m256i*)SHIFTS);
 
@@ -659,10 +715,7 @@ namespace _INTERNAL{
             //  0   0 h01 h01   0   0  h45  h45  
             //  0   0  0   0  h03 h03  h03  h03
             //
-        
-
-
-
+       
             __m256i Doubles = _mm256_hadd_epi32(hits,hits);        // h0+h1, h2+h3, h0+h1,h2+h3,  h4+h5, h6+h7, h4+h5, h6+h7
             __m256i Quads   = _mm256_hadd_epi32(Doubles,Doubles);  // h0-h3, h0-h3, h0-h3,h0-h3,  h4-h7, h4-h7, h4-h7, h4-h7
             Quads = _mm256_inserti128_si256(_mm256_setzero_si256(),_mm256_castsi256_si128(Quads),0x1); // 0,0,0,0, h0-h3 .....
@@ -746,10 +799,7 @@ namespace _INTERNAL{
         args.pRays = (const byte*)pRays;
         ReadRaysLoop(args,nGroups);
     }
-
-
-
-    
+#endif
     static void __forceinline TransposePacket( __m256* pOut, __m256* p )
     {
         // Transpose a set of 8 m256's  
