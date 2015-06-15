@@ -560,6 +560,8 @@ namespace _INTERNAL{
     }
 
 
+    // Thanks to Fabian "Rygorous" Giesen for the idea of using a shuffle table
+    //
     static const __m128i SHUFFLE_TABLE[16] = {
          _mm_setr_epi8(12,13,14,15, 8, 9,10,11, 4, 5, 6, 7, 0, 1, 2, 3),
          _mm_setr_epi8( 0, 1, 2, 3,12,13,14,15, 8, 9,10,11, 4, 5, 6, 7),
@@ -579,6 +581,7 @@ namespace _INTERNAL{
          _mm_setr_epi8( 4, 5, 6, 7, 8, 9,10,11,12,13,14,15, 0, 1, 2, 3),
          _mm_setr_epi8( 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15),
     };
+    
     static void __fastcall ReorderRays( StackFrame& frame, size_t nGroups )
     {        
         RayPacket** pPackets = frame.pActivePackets;
@@ -599,7 +602,7 @@ namespace _INTERNAL{
             uint64 pop_lo  = _mm_popcnt_u64(hit_lo);
             uint64 pop_hi  = _mm_popcnt_u64(hit_hi);
 
-            // load lo/hi ID pairs
+             // load lo/hi ID pairs
             __m128i id_lo = _mm_load_si128( (__m128i*) pPacketRayIDs );
             __m128i id_hi = _mm_load_si128( (__m128i*) (pPacketRayIDs+4) );
             
@@ -625,181 +628,6 @@ namespace _INTERNAL{
         ReadRaysLoop(args,nGroups);
     }
     
-
-#if 0
-    static const __declspec(align(32))uint32 SHIFTS[]  = {0,1,2,3,4,5,6,7};
-
-    static void __fastcall ReorderRays( StackFrame& frame, size_t nGroups )
-    {        
-        RayPacket** pPackets = frame.pActivePackets;
-
-        uint32 pIDs[MAX_TRACER_SIZE];
-   
-        size_t nHitLoc  = 0;
-        size_t nMissLoc = 8*nGroups;
-
-        const char* pRays = (const char*) frame.pRays;
-        for( size_t i=0; i<nGroups; i++ )
-        {
-            uint32* __restrict pPacketRayIDs = pPackets[i]->RayOffsets;
-   
-            // Turn the 8-bit mask into 8 packed bytes
-            const unsigned __int64 ONE_BYTES = 0x0101010101010101;
-            unsigned __int64 hit    = _pdep_u64( frame.pMasks[i], ONE_BYTES);
-            unsigned __int64 miss   = hit ^ (ONE_BYTES);
-            __m128i vhit      = _mm_cvtsi64_si128(hit);
-            __m128i vmiss     = _mm_cvtsi64_si128(miss);
-
-            __m128i vhit_mask = _mm_sub_epi8(vmiss,_mm_cvtsi64_si128(ONE_BYTES)); // 0 if miss, 0xff if hit
-                    vhit_mask = _mm_cvtepi8_epi16(vhit_mask); // 0 or 0xffff
-
-            // prefix sum via shifts+adds.  Thanks to @rygorous for the idea
-            //  We could also do this by packing into an __m256 and doing hit/miss in parallel
-            //  
-            //  But using __m128 is nicer bc Haswell can dual-issue nearly all of these ops
-            //    and it avoids the expensive cross-lane pack/unpack
-            //
-            __m128i prefix_hit  = _mm_add_epi8(vhit,   _mm_slli_si128(vhit,1));  
-            __m128i prefix_miss = _mm_add_epi8(vmiss,  _mm_slli_si128(vmiss,1));
-                    prefix_hit  = _mm_add_epi8(prefix_hit,   _mm_slli_si128(prefix_hit,2));
-                    prefix_miss = _mm_add_epi8(prefix_miss,  _mm_slli_si128(prefix_miss,2));
-                    prefix_hit  = _mm_add_epi8(prefix_hit,   _mm_slli_si128(prefix_hit,4));
-                    prefix_miss = _mm_add_epi8(prefix_miss,  _mm_slli_si128(prefix_miss,4));
-                    prefix_hit  = _mm_sub_epi8(prefix_hit, vhit);  // exclude ray itself from the prefix sum
-                    prefix_miss = _mm_sub_epi8(prefix_miss,vmiss);
-                    prefix_hit  = _mm_cvtepi8_epi16(prefix_hit);
-                    prefix_miss = _mm_cvtepi8_epi16(prefix_miss);
-
-            __m128i hitBase  = _mm_broadcastw_epi16(_mm_cvtsi64_si128(nHitLoc));
-            __m128i missBase = _mm_broadcastw_epi16(_mm_cvtsi64_si128(nMissLoc-1));
-            prefix_hit  = _mm_add_epi16(prefix_hit,hitBase);
-            prefix_miss = _mm_sub_epi16(missBase, prefix_miss);
-
-            size_t nHitPop = _mm_popcnt_u64(frame.pMasks[i]);
-            nHitLoc  += nHitPop ;
-            nMissLoc -= (8-nHitPop);
-
-            __m128i addr = _mm_blendv_epi8(prefix_miss,prefix_hit,vhit_mask);
-      
-            pIDs[ _mm_extract_epi16(addr,0) ] = pPacketRayIDs[0]; 
-            pIDs[ _mm_extract_epi16(addr,1) ] = pPacketRayIDs[1]; 
-            pIDs[ _mm_extract_epi16(addr,2) ] = pPacketRayIDs[2]; 
-            pIDs[ _mm_extract_epi16(addr,3) ] = pPacketRayIDs[3]; 
-            pIDs[ _mm_extract_epi16(addr,4) ] = pPacketRayIDs[4]; 
-            pIDs[ _mm_extract_epi16(addr,5) ] = pPacketRayIDs[5]; 
-            pIDs[ _mm_extract_epi16(addr,6) ] = pPacketRayIDs[6]; 
-            pIDs[ _mm_extract_epi16(addr,7) ] = pPacketRayIDs[7]; 
-
-              
-            /*
-            // Original prefix sum
-            __m256i ONES    = BROADCASTINT(1);
-            __m256i INDEX   = _mm256_load_si256((__m256i*)SHIFTS);
-
-            __m256i masks   = BROADCASTINT(frame.pMasks[i]);
-                    masks  = _mm256_srlv_epi32(masks, INDEX ); // mask >> lane_idx
-            __m256i hits   = _mm256_and_si256(masks,ONES);     // value is 1 for each lane if it hit
-        
-       
-            // Hit ray IDs go in from the start
-            // Miss ray IDs go in from the end.  In both cases we can figure out
-            //   the address of each ray using a prefix sum across the hit/miss masks
-            //  
-           
-            // We want to sum things as follows:  where: hxy is sum(hx...hy)       
-            //
-            // <--- Columns are SIMD lanes ---->
-            // --------------------------------
-            //  0   0  0  0     0   0   0    0
-            //  0  h0  0  h2    0   h4  0    h6
-            //  0   0 h01 h01   0   0  h45  h45  
-            //  0   0  0   0  h03 h03  h03  h03
-            //
-       
-            __m256i Doubles = _mm256_hadd_epi32(hits,hits);        // h0+h1, h2+h3, h0+h1,h2+h3,  h4+h5, h6+h7, h4+h5, h6+h7
-            __m256i Quads   = _mm256_hadd_epi32(Doubles,Doubles);  // h0-h3, h0-h3, h0-h3,h0-h3,  h4-h7, h4-h7, h4-h7, h4-h7
-            Quads = _mm256_inserti128_si256(_mm256_setzero_si256(),_mm256_castsi256_si128(Quads),0x1); // 0,0,0,0, h0-h3 .....
-     
-            __m256i m0  = _mm256_shuffle_epi32( hits,     SHUFFLE(0,0,2,2) ); // h0, h0, h2, h2, h4, h4, h6, h6
-            __m256i m1  = _mm256_shuffle_epi32( Doubles,  SHUFFLE(0,0,0,0) ); // h0+h1 ...., h4+h5,....
-            m0  = _mm256_blend_epi32( _mm256_setzero_si256(), m0, 0xAA ); // 10101010 ->  0 h0  0   h2 0 h4  0   h6
-            m1  = _mm256_blend_epi32( _mm256_setzero_si256(), m1, 0xCC ); // 11001100 ->  0  0 h01 h01 0  0 h45 h45
-
-            __m256i hitPrefix  = _mm256_add_epi32(Quads,_mm256_add_epi32(m0,m1));  // prefix sum on hit rays
-            __m256i missPrefix = _mm256_sub_epi32(INDEX,hitPrefix); // prefix sum on missed rays
-            __m256i missMask   = _mm256_sub_epi32(hits,ONES);       // 0xffffffff if lane is a miss, 0 otherwise
-            __m256i hitAddr    = BROADCASTINT(nHitLoc);
-            __m256i missAddr   = BROADCASTINT(nMissLoc-1);
-            hitAddr            = _mm256_add_epi32(hitAddr,hitPrefix);
-            missAddr           = _mm256_sub_epi32(missAddr,missPrefix);
-            __m256i addr       = _mm256_blendv_epi8(hitAddr,missAddr,missMask);
-        
-            
-            size_t nHitPop = _mm_popcnt_u64(frame.pMasks[i]);
-            nHitLoc  += nHitPop ;
-            nMissLoc -= (8-nHitPop);
-        
-            __m128i hi = _mm256_extracti128_si256(addr,1);
-            __m128i lo = _mm256_extracti128_si256(addr,0);
-            
-        
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[0],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[1],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[2],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[3],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[4],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[5],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[6],_MM_HINT_T0 );
-            _mm_prefetch( (char*)(pRays)+pPacketRayIDs[7],_MM_HINT_T0 );
-
-            pIDs[ _mm_extract_epi32(lo,0) ] = pPacketRayIDs[0]; 
-            pIDs[ _mm_extract_epi32(lo,1) ] = pPacketRayIDs[1]; 
-            pIDs[ _mm_extract_epi32(lo,2) ] = pPacketRayIDs[2]; 
-            pIDs[ _mm_extract_epi32(lo,3) ] = pPacketRayIDs[3]; 
-            pIDs[ _mm_extract_epi32(hi,0) ] = pPacketRayIDs[4]; 
-            pIDs[ _mm_extract_epi32(hi,1) ] = pPacketRayIDs[5]; 
-            pIDs[ _mm_extract_epi32(hi,2) ] = pPacketRayIDs[6]; 
-            pIDs[ _mm_extract_epi32(hi,3) ] = pPacketRayIDs[7]; 
-        */
-        
-        
-           // The bit-twiddling loops that it replaced...
-           /*
-            // misses in back
-            size_t mmiss = (~frame.pMasks[i])&0xff;
-            while( mmiss )
-            {
-                size_t k      = _tzcnt_u64(mmiss);
-                mmiss         = _blsr_u64(mmiss);
-                size_t nID = pPacketRayIDs[k];
-                uint32* p = pIDs + (--nMissLoc);
-                *p = nID;
-                _mm_prefetch( pRays + nID, _MM_HINT_T0 );
-            } 
-
-            // hits in fromt
-            size_t mhit    = frame.pMasks[i];
-            while( mhit )
-            {
-                size_t k     = _tzcnt_u64(mhit);
-                mhit         = _blsr_u64(mhit);
-                size_t nID = pPacketRayIDs[k];
-                uint32* p = pIDs + (nHitLoc++);
-                *p = nID;
-                _mm_prefetch( pRays + nID, _MM_HINT_T0 );
-            }
-            */
-        }
-
-    
-            
-        ReadRaysLoopArgs args;
-        args.pPackets = pPackets;
-        args.pRayIDs = pIDs;
-        args.pRays = (const byte*)pRays;
-        ReadRaysLoop(args,nGroups);
-    }
-#endif
     static void __forceinline TransposePacket( __m256* pOut, __m256* p )
     {
         // Transpose a set of 8 m256's  

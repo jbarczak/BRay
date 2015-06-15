@@ -371,7 +371,10 @@ void DebugDump(char* pWhere, Photon* pPhotons)
    
     Simpleton::Matrix4f mViewProj = mProj*mView;
     Simpleton::PPMImage img(512,512);
-    
+    for( int i=0; i<img.GetHeight(); i++ )
+        for( int j=0; j<img.GetWidth(); j++ )
+            img.SetPixel(i,j,0.0f,0.0f,0.0f);
+
     for( uint i=0; i<NUM_PHOTONS; i++ )
     {
         Vec3f view = Simpleton::AffineTransformPoint(mView,pPhotons[i].Pos );
@@ -400,6 +403,7 @@ void DebugDump(char* pWhere, Photon* pPhotons)
 
 int main(int argc, char* argv[])
 {
+    
     Simpleton::PlyMesh ply;
     if( !Simpleton::LoadPly( MESH_FILE, ply, 0 ) )
         return false;
@@ -419,15 +423,15 @@ int main(int argc, char* argv[])
     Photon* pPhotonsB = new Photon[NUM_PHOTONS];
 
  //   
- //srand(0);
- //GoBRay(ply,pPhotonsB);
+ srand(0);
+ GoBRay(ply,pPhotonsB);
   //
-   srand(0);
-   GoEmbree(ply,pPhotonsEmb);
-  
-   
-  //  DebugDump("embree.ppm",pPhotonsEmb);
-    DebugDump("bray.ppm",pPhotonsB);
+ srand(0);
+ GoEmbree(ply,pPhotonsEmb);
+ //
+  //
+   DebugDump("embree.ppm",pPhotonsEmb);
+   DebugDump("bray.ppm",pPhotonsB);
 
 
 
