@@ -20,8 +20,8 @@ using Simpleton::Timer;
 
 #include <Windows.h>
 
-#define NUM_PHOTONS 20000000
-#define BOUNCE_LIMIT 12
+#define NUM_PHOTONS 10000000
+#define BOUNCE_LIMIT 4
 
 #define MESH_FILE "kitchen.ply"
 
@@ -46,6 +46,7 @@ struct Photon
 
 static void GoBRay( Simpleton::PlyMesh& ply, Photon* pPhotons )
 {
+    printf("***BRay***\n");
     Timer tm;
     BRay::AcceleratorHandle hAccel=0;
     BRay::TracerHandle hTrace0=0;
@@ -222,6 +223,8 @@ static void GoBRay( Simpleton::PlyMesh& ply, Photon* pPhotons )
 #ifndef _NO_EMBREE
 static void GoEmbree( Simpleton::PlyMesh& ply, Photon* pPhotons )
 {
+    
+    printf("***Embree***\n");
     Timer tm;
     CreateEmbreeScene( ply.nTriangles, ply.nVertices, (float*) ply.pPositions, &ply.pVertexIndices[0] );
     printf("embree init time: %u\n", tm.Tick() );
@@ -419,15 +422,15 @@ int main(int argc, char* argv[])
         printf("%fM tics\\s\n", (ticks)/spinup.TickMicroSeconds());
     }
 
-    Photon* pPhotonsEmb = new Photon[NUM_PHOTONS];
+   Photon* pPhotonsEmb = new Photon[NUM_PHOTONS];
     Photon* pPhotonsB = new Photon[NUM_PHOTONS];
 
  //   
  srand(0);
  GoBRay(ply,pPhotonsB);
   //
- srand(0);
- GoEmbree(ply,pPhotonsEmb);
+srand(0);
+GoEmbree(ply,pPhotonsEmb);
  //
   //
    DebugDump("embree.ppm",pPhotonsEmb);

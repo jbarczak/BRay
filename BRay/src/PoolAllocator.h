@@ -16,7 +16,7 @@
 #ifndef _POOL_ALLOCATOR_H_
 #define _POOL_ALLOCATOR_H_
 
-namespace Simpleton
+namespace BRay
 {
     /// Simple block allocator which allocates storage in chunks and never releases any of it
     /// This is intended for aggregating large numbers of temporary allocs which are all released at once

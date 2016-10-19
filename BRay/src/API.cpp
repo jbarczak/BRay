@@ -114,6 +114,9 @@ namespace BRay
         pTracer->pRays = (_INTERNAL::Ray*)(pTracer+1);
         pTracer->pTraversalStack = (_INTERNAL::StackEntry*) (pTracer->pRays + nMaxRays);
         pTracer->pRayOctants = (uint8*) (pTracer->pTraversalStack + hAccel->nStackDepth);
+        for( size_t i=0; i<8; i++ )
+            pTracer->pOctantCounts[i] = 0;
+
         _INTERNAL::RetainObject(pTracer);
         return pTracer;
     }
@@ -145,16 +148,20 @@ namespace BRay
      
         // read direction and compute octant based on direction signs
         const uint32* pRayIn = (const uint32*)pRay;
+        size_t ox = pRayIn[0];
+        size_t oy = pRayIn[1];
+        size_t oz = pRayIn[2];
+        size_t t  = pRayIn[3];
         size_t dx = pRayIn[4];
         size_t dy = pRayIn[5];
         size_t dz = pRayIn[6];
-        
+
         // move the ray.  
         uint32* pRayOut = (uint32*) (pRayLocation);
-        pRayOut[0] = pRayIn[0];
-        pRayOut[1] = pRayIn[1];
-        pRayOut[2] = pRayIn[2];
-        pRayOut[3] = pRayIn[3];
+        pRayOut[0] = ox;
+        pRayOut[1] = oy;
+        pRayOut[2] = oz;
+        pRayOut[3] = t;
         pRayOut[4] = dx;
         pRayOut[5] = dy;
         pRayOut[6] = dz;
@@ -182,15 +189,21 @@ namespace BRay
 
     void ReadRayOrigin( TracerHandle hTracer, float* pOrigin, size_t nRayIndex )
     {
-        pOrigin[0] = hTracer->pRays[nRayIndex].ox;
-        pOrigin[1] = hTracer->pRays[nRayIndex].oy;
-        pOrigin[2] = hTracer->pRays[nRayIndex].oz;
+        float ox = hTracer->pRays[nRayIndex].ox;
+        float oy = hTracer->pRays[nRayIndex].oy;
+        float oz = hTracer->pRays[nRayIndex].oz;
+        pOrigin[0] = ox;
+        pOrigin[1] = oy;
+        pOrigin[2] = oz;
     }
     void ReadRayDirection( TracerHandle hTracer, float* pDir, size_t nRayIndex )
     {
-        pDir[0] = hTracer->pRays[nRayIndex].dx;
-        pDir[1] = hTracer->pRays[nRayIndex].dy;
-        pDir[2] = hTracer->pRays[nRayIndex].dz;
+        float dx = hTracer->pRays[nRayIndex].dx;
+        float dy = hTracer->pRays[nRayIndex].dy;
+        float dz = hTracer->pRays[nRayIndex].dz;
+        pDir[0] = dx;
+        pDir[1] = dy;
+        pDir[2] = dz;
     }
 
     size_t GetRayCount( TracerHandle hTracer )

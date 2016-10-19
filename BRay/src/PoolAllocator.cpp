@@ -16,7 +16,7 @@
 #include "PoolAllocator.h"
 #include "Malloc.h"
 
-namespace Simpleton
+namespace BRay
 {
     void* PoolAllocator::GetMore( size_t nSize )
     {

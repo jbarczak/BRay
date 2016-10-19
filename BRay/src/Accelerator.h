@@ -22,7 +22,7 @@ namespace BRay{
 
 namespace _INTERNAL{
 
-    using Simpleton::PoolAllocator;
+    using BRay::PoolAllocator;
 
     struct PreprocessedTri;
 
